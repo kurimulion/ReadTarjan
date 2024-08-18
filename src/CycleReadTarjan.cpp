@@ -6,10 +6,7 @@
 #include <chrono>
 #include <queue>
 #include <list>
-
-#ifdef MPI_IMPL
-#include <mpi.h>
-#endif
+#include <cilk/cilk.h>
 
 using namespace std;
 
@@ -285,26 +282,31 @@ namespace
 
 void allCyclesReadTarjanCoarseGrainedTW(Graph *g, CycleHist &result, int numThreads)
 {
-    parallel_for(size_t(0), size_t(g->getVertexNo()), [&](size_t i)
-                 {
-        if ((g->numNeighbors(i) != 0) && (g->numInEdges(i) != 0)) {
-            parallel_for(size_t(g->offsArray[i]), size_t(g->offsArray[i + 1]), [&](size_t ind) {
+    for (size_t i = 0; i < size_t(g->getVertexNo()); i++)
+    {
+        if ((g->numNeighbors(i) != 0) && (g->numInEdges(i) != 0))
+        {
+            for (size_t ind = size_t(g->offsArray[i]); ind < size_t(g->offsArray[i + 1]); ind++)
+            {
                 int w = g->edgeArray[ind].vertex;
                 auto &tset = g->edgeArray[ind].tstamps;
 
-                parallel_for(size_t(0), size_t(tset.size()), [&](size_t j) {
-                        int ts = tset[j];
+                for (size_t j = 0; j < size_t(tset.size()); j++)
+                {
+                    int ts = tset[j];
 
-                        HashSetStack blocked(g->getVertexNo());
-                        Cycle *cycle = new Cycle();
-                        cycle->push_back(i);
+                    HashSetStack blocked(g->getVertexNo());
+                    Cycle *cycle = new Cycle();
+                    cycle->push_back(i);
 
-                        Path *current_path = NULL;
-                        bool found = findPath(g, w, cycle->front(), blocked, current_path, ts);
-                        if (found) followPath(g, EdgeData(i, -1), cycle, blocked, result, current_path, ts);
+                    Path *current_path = NULL;
+                    bool found = findPath(g, w, cycle->front(), blocked, current_path, ts);
+                    if (found)
+                        followPath(g, EdgeData(i, -1), cycle, blocked, result, current_path, ts);
 
-                        delete cycle;
-                });
-            });
-        } });
+                    delete cycle;
+                }
+            }
+        }
+    }
 }

@@ -7,10 +7,6 @@
 #include <chrono>
 #include <queue>
 
-#ifdef MPI_IMPL
-#include <mpi.h>
-#endif
-
 using namespace std;
 
 extern int timeWindow;
@@ -166,19 +162,20 @@ int findCycleUnions(Graph *g, EdgeData startEdge, int startVert, int timeWindow,
 
 void cycleUnionExecTime(Graph *g, int numThreads)
 {
-    parallel_for(size_t(0), size_t(g->getVertexNo()), [&](size_t vert)
-                 { parallel_for(size_t(g->offsArray[vert]), size_t(g->offsArray[vert + 1]), [&](size_t ind)
-                                {
+    for (size_t vert = 0; vert < size_t(g->getVertexNo()); vert++)
+    {
+        for (size_t ind = size_t(g->offsArray[vert]); ind < size_t(g->offsArray[vert + 1]); ind++)
+        {
             int w = g->edgeArray[ind].vertex;
             auto &tset = g->edgeArray[ind].tstamps;
 
-            parallel_for(size_t(0), size_t(tset.size()), [&](size_t j) {
-
-                if ((ind + j) % size_of_cluster == process_rank) {
-                    int tw = tset[j];
-                    StrongComponent *cunion = NULL;
-                    findCycleUnions(g, EdgeData(w, tw), vert, timeWindow, cunion);
-                    delete cunion;
-                }
-            }); }); });
+            for (size_t j = 0; j < size_t(tset.size()); j++)
+            {
+                int tw = tset[j];
+                StrongComponent *cunion = NULL;
+                findCycleUnions(g, EdgeData(w, tw), vert, timeWindow, cunion);
+                delete cunion;
+            }
+        }
+    }
 }

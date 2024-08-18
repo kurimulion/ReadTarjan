@@ -14,19 +14,24 @@
 
 using namespace std;
 
-inline bool pathExists(string path) {
+inline bool pathExists(string path)
+{
     struct stat buffer;
-    if (stat(path.c_str(), &buffer) != 0) return false;
+    if (stat(path.c_str(), &buffer) != 0)
+        return false;
     return true;
 }
 
-inline char* getCmdOption(char ** begin, char ** end, const std::string & option) {
-    char ** itr = std::find(begin, end, option);
-    if (itr != end && ++itr != end) return *itr;
+inline char *getCmdOption(char **begin, char **end, const std::string &option)
+{
+    char **itr = std::find(begin, end, option);
+    if (itr != end && ++itr != end)
+        return *itr;
     return 0;
 }
 
-inline bool cmdOptionExists(char** begin, char** end, const std::string& option) {
+inline bool cmdOptionExists(char **begin, char **end, const std::string &option)
+{
     return std::find(begin, end, option) != end;
 }
 
@@ -54,4 +59,4 @@ inline void printHelp()
     std::cout << "    -h             Print this message" << std::endl;
 }
 
-#endif//_GRAPH_UTILS_H_
+#endif //_GRAPH_UTILS_H_
