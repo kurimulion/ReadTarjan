@@ -13,6 +13,28 @@ using namespace std;
 extern int timeWindow;
 extern ConcurrentCounter vertexVisits;
 
+void ident_hist(void *v)
+{
+    new (v) CycleHist();
+    // *(CycleHist *)v = CycleHist();
+}
+
+void combin_hist(void *l, void *r)
+{
+    CycleHist &h1 = *(CycleHist *)l;
+    CycleHist h2 = *(CycleHist *)r;
+    for (auto &pair : h2)
+    {
+        const int &cyc_size = pair.first;
+        const unsigned long &cyc_num = pair.second;
+
+        if (h1.find(cyc_size) == h1.end())
+            h1[cyc_size] = 0;
+
+        h1[cyc_size] += cyc_num;
+    }
+}
+
 /// DFS/BFS functions for pruning the search space
 
 // Prune the search space and find the path using DFS
@@ -133,10 +155,10 @@ namespace
 {
 
     void followPath(Graph *g, EdgeData e, Cycle *current, HashSetStack &blocked,
-                    CycleHist &result, Path *current_path, int tstart = -1);
+                    CycleHist cilk_reducer(ident_hist, combin_hist) & result, Path *current_path, int tstart = -1);
 
     void cyclesReadTarjan(Graph *g, EdgeData e, Cycle *current, HashSetStack &blocked,
-                          CycleHist &result, pair<Path *, Path *> paths,
+                          CycleHist cilk_reducer(ident_hist, combin_hist) & result, pair<Path *, Path *> paths,
                           int tstart = -1)
     {
 
@@ -192,7 +214,7 @@ namespace
 #ifdef BLK_FORWARD
             //        HashSetStack new_blocked(blocked);
             blocked.incrementLevel();
-            followPath(g, e, current, blocked, result, current_path, tstart);
+            cilk_spawn followPath(g, e, current->clone(), *blocked.clone(), result, current_path, tstart);
             blocked.decrementLevel();
 #else
             HashSetStack new_blocked(g->getVertexNo());
@@ -204,7 +226,7 @@ namespace
         }
     }
 
-    void followPath(Graph *g, EdgeData e, Cycle *current, HashSetStack &blocked, CycleHist &result, Path *current_path, int tstart)
+    void followPath(Graph *g, EdgeData e, Cycle *current, HashSetStack &blocked, CycleHist cilk_reducer(ident_hist, combin_hist) & result, Path *current_path, int tstart)
     {
 
         Path *another_path = NULL;
@@ -257,7 +279,7 @@ namespace
                 delete current_path;
             current_path = NULL;
 #endif
-            cyclesReadTarjan(g, EdgeData(prev_vertex, -1), current, blocked, result, make_pair(current_path, another_path), tstart);
+            cilk_spawn cyclesReadTarjan(g, EdgeData(prev_vertex, -1), current, *blocked.clone(), result, make_pair(current_path, another_path), tstart);
         }
         else
         {
@@ -282,16 +304,18 @@ namespace
 
 void allCyclesReadTarjanCoarseGrainedTW(Graph *g, CycleHist &result, int numThreads)
 {
-    for (size_t i = 0; i < size_t(g->getVertexNo()); i++)
+    CycleHist cilk_reducer(ident_hist, combin_hist) resultHistogram;
+
+    cilk_for(size_t i = 0; i < size_t(g->getVertexNo()); i++)
     {
         if ((g->numNeighbors(i) != 0) && (g->numInEdges(i) != 0))
         {
-            for (size_t ind = size_t(g->offsArray[i]); ind < size_t(g->offsArray[i + 1]); ind++)
+            cilk_for(size_t ind = size_t(g->offsArray[i]); ind < size_t(g->offsArray[i + 1]); ind++)
             {
                 int w = g->edgeArray[ind].vertex;
                 auto &tset = g->edgeArray[ind].tstamps;
 
-                for (size_t j = 0; j < size_t(tset.size()); j++)
+                cilk_for(size_t j = 0; j < size_t(tset.size()); j++)
                 {
                     int ts = tset[j];
 
@@ -302,11 +326,13 @@ void allCyclesReadTarjanCoarseGrainedTW(Graph *g, CycleHist &result, int numThre
                     Path *current_path = NULL;
                     bool found = findPath(g, w, cycle->front(), blocked, current_path, ts);
                     if (found)
-                        followPath(g, EdgeData(i, -1), cycle, blocked, result, current_path, ts);
+                        followPath(g, EdgeData(i, -1), cycle, blocked, resultHistogram, current_path, ts);
 
                     delete cycle;
                 }
             }
         }
     }
+
+    result = resultHistogram;
 }

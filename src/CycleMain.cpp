@@ -71,6 +71,7 @@ int main(int argc, char **argv)
     bool printResult = true;
 
     CycleHist resultHistogram;
+    // CycleHist resultHistogram;
     auto total_start = chrono::steady_clock::now();
     switch (algo)
     {
