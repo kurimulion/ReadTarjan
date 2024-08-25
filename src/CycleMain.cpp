@@ -71,7 +71,6 @@ int main(int argc, char **argv)
     bool printResult = true;
 
     CycleHist resultHistogram;
-    // CycleHist resultHistogram;
     auto total_start = chrono::steady_clock::now();
     switch (algo)
     {
@@ -134,7 +133,7 @@ int main(int argc, char **argv)
     auto total_end = chrono::steady_clock::now();
     double total = chrono::duration_cast<chrono::milliseconds>(total_end - total_start).count() / 1000.0;
     cout << "Total time: " << total << " s" << endl;
-    cout << "Vertex visits: " << vertexVisits.getResult() << endl;
+    cout << "Vertex visits: " << vertexVisits << endl;
     if (printResult)
     {
         cout << "# cycle_size, num_of_cycles\n";

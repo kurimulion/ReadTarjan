@@ -5,38 +5,50 @@
 #include <cstring>
 #include <unordered_set>
 #include <unordered_map>
+#include <mutex>
+#include <cilk/cilk.h>
 
 #include "Macros.h"
 
 using namespace std;
 
-/// Concurrent counter for collecting statistics
-template <typename T = unsigned long>
-class TConcurrentCounter
+inline void ident_cnt(void *v)
 {
-public:
-    TConcurrentCounter() {}
+    *(unsigned long *)v = 0;
+}
 
-    void increment(T inc = 1)
-    {
-        result += inc;
-    }
+inline void add_cnt(void *l, void *r)
+{
+    *(unsigned long *)l += *(unsigned long *)r;
+}
 
-    void decrement()
-    {
-        result--;
-    }
+/// Concurrent counter for collecting statistics
+// class TConcurrentCounter
+// {
+// public:
+//     TConcurrentCounter() {}
 
-    T getResult()
-    {
-        return result;
-    }
+//     void increment(unsigned long inc = 1)
+//     {
+//         result += inc;
+//     }
 
-private:
-    T result = 0;
-};
+//     void decrement()
+//     {
+//         result--;
+//     }
 
-typedef TConcurrentCounter<unsigned long> ConcurrentCounter;
+//     unsigned long getResult()
+//     {
+//         return result;
+//     }
+
+// private:
+//     unsigned long cilk_reducer(ident_cnt, add_cnt) result;
+// };
+
+typedef unsigned long cilk_reducer(ident_cnt, add_cnt) ConcurrentCounter;
+// typedef unsigned long ConcurrentCounter;
 
 /// Wrapper for dynamic array
 template <typename T>
@@ -126,20 +138,28 @@ private:
 class HashSetStack
 {
 private:
-    // typedef tbb::spin_mutex HashSetMutexType;
-    // HashSetMutexType HashSetMutex;
+    typedef std::mutex HashSetMutexType;
+    HashSetMutexType HashSetMutex;
 
 public:
-    HashSetStack(bool conc = false) : curLevel(0), elems(), concurrent(conc) {};
-    HashSetStack(int s, bool conc = false) : curLevel(0), elems(), concurrent(conc) {};
-    HashSetStack(const HashSetStack &hs) : curLevel(hs.curLevel), elems(hs.elems), concurrent(hs.concurrent) {};
+    HashSetStack(bool conc = false) : curLevel(0), elems(), concurrent(conc), HashSetMutex() {};
+    HashSetStack(int s, bool conc = false) : curLevel(0), elems(), concurrent(conc), HashSetMutex() {};
+    HashSetStack(const HashSetStack &hs) : curLevel(hs.curLevel), elems(hs.elems), concurrent(hs.concurrent), HashSetMutex() {};
 
     HashSetStack *clone()
     {
-        // if(concurrent) HashSetMutex.lock();
-        HashSetStack *ret = new HashSetStack(*this);
-        // if(concurrent) HashSetMutex.unlock();
+        HashSetStack *ret;
+        if (concurrent) // HashSetMutex.lock();
+        {
+            const std::lock_guard<std::mutex> lock(HashSetMutex);
+            ret = new HashSetStack(*this);
+        }
+        else
+        {
+            ret = new HashSetStack(*this);
+        }
         return ret;
+        // if(concurrent) HashSetMutex.unlock();
     }
 
     HashSetStack *clone(int lvl)
@@ -148,11 +168,22 @@ public:
         ret->curLevel = lvl;
         ret->concurrent = concurrent;
 
-        // if(concurrent) HashSetMutex.lock();
-        for (auto it = elems.begin(); it != elems.end(); ++it)
+        if (concurrent) // HashSetMutex.lock();
         {
-            if (it->second <= lvl)
-                ret->elems.insert({it->first, it->second});
+            const std::lock_guard<std::mutex> lock(HashSetMutex);
+            for (auto it = elems.begin(); it != elems.end(); ++it)
+            {
+                if (it->second <= lvl)
+                    ret->elems.insert({it->first, it->second});
+            }
+        }
+        else
+        {
+            for (auto it = elems.begin(); it != elems.end(); ++it)
+            {
+                if (it->second <= lvl)
+                    ret->elems.insert({it->first, it->second});
+            }
         }
         // if(concurrent) HashSetMutex.unlock();
 
@@ -163,31 +194,35 @@ public:
 
     void incrementLevel()
     {
-        // if(concurrent) HashSetMutex.lock();
-        curLevel++;
+        if (concurrent) // HashSetMutex.lock();
+        {
+            const std::lock_guard<std::mutex> lock(HashSetMutex);
+            curLevel++;
+        }
+        else
+        {
+            curLevel++;
+        }
         // if(concurrent) HashSetMutex.unlock();
     }
 
     void decrementLevel()
     {
-        // if(concurrent) HashSetMutex.lock();
-        curLevel--;
-        for (auto it = elems.begin(); it != elems.end();)
+        if (concurrent) // HashSetMutex.lock();
         {
-            if (it->second > curLevel)
-                it = elems.erase(it);
-            else
-                it++;
+            const std::lock_guard<std::mutex> lock(HashSetMutex);
+            curLevel--;
+            for (auto it = elems.begin(); it != elems.end();)
+            {
+                if (it->second > curLevel)
+                    it = elems.erase(it);
+                else
+                    it++;
+            }
         }
-        // if(concurrent) HashSetMutex.unlock();
-    }
-
-    void setLevel(int lvl)
-    {
-        // if(concurrent) HashSetMutex.lock();
-        if (lvl < curLevel)
+        else
         {
-            curLevel = lvl;
+            curLevel--;
             for (auto it = elems.begin(); it != elems.end();)
             {
                 if (it->second > curLevel)
@@ -199,11 +234,53 @@ public:
         // if(concurrent) HashSetMutex.unlock();
     }
 
+    void setLevel(int lvl)
+    {
+        if (concurrent) // HashSetMutex.lock();
+        {
+            const std::lock_guard<std::mutex> lock(HashSetMutex);
+            if (lvl < curLevel)
+            {
+                curLevel = lvl;
+                for (auto it = elems.begin(); it != elems.end();)
+                {
+                    if (it->second > curLevel)
+                        it = elems.erase(it);
+                    else
+                        it++;
+                }
+            }
+        }
+        else
+        {
+            if (lvl < curLevel)
+            {
+                curLevel = lvl;
+                for (auto it = elems.begin(); it != elems.end();)
+                {
+                    if (it->second > curLevel)
+                        it = elems.erase(it);
+                    else
+                        it++;
+                }
+            }
+        }
+        // if(concurrent) HashSetMutex.unlock();
+    }
+
     void insert(int el)
     {
-        // if(concurrent) HashSetMutex.lock();
-        if (elems.find(el) == elems.end())
-            elems[el] = curLevel;
+        if (concurrent) // HashSetMutex.lock();
+        {
+            const std::lock_guard<std::mutex> lock(HashSetMutex);
+            if (elems.find(el) == elems.end())
+                elems[el] = curLevel;
+        }
+        else
+        {
+            if (elems.find(el) == elems.end())
+                elems[el] = curLevel;
+        }
         // if(concurrent) HashSetMutex.unlock();
     }
 
@@ -262,6 +339,8 @@ public:
             insert(el);
         }
     }
+
+    int level() { return curLevel; }
 
 private:
     int curLevel = 0;
@@ -335,17 +414,23 @@ private:
         int level;
         StackElem(int ct = 0, int l = 0) : cltime(ct), level(l) {};
     };
-    // typedef tbb::spin_mutex HashMapMutexType;
-    // HashMapMutexType HashMapMutex;
+    typedef std::mutex HashMapMutexType;
+    HashMapMutexType HashMapMutex;
 
 public:
-    HashMapStack(bool conc = false) : curLevel(0), elems(), concurrent(conc) {};
-    HashMapStack(const HashMapStack &hs) : curLevel(hs.curLevel), elems(hs.elems), concurrent(hs.concurrent) {};
+    HashMapStack(bool conc = false) : curLevel(0), elems(), concurrent(conc), HashMapMutex() {};
+    HashMapStack(const HashMapStack &hs) : curLevel(hs.curLevel), elems(hs.elems), concurrent(hs.concurrent), HashMapMutex() {};
 
     HashMapStack *clone()
     {
-        // if(concurrent) HashMapMutex.lock();
-        HashMapStack *ret = new HashMapStack(*this);
+        HashMapStack *ret;
+        if (concurrent) // HashMapMutex.lock();
+        {
+            const std::lock_guard<std::mutex> lock(HashMapMutex);
+            ret = new HashMapStack(*this);
+        }
+        else
+            ret = new HashMapStack(*this);
         // if(concurrent) HashMapMutex.unlock();
         return ret;
     }
@@ -356,16 +441,34 @@ public:
         ret->curLevel = lvl;
         ret->concurrent = concurrent;
 
-        // if(concurrent) HashMapMutex.lock();
-        for (auto it = elems.begin(); it != elems.end(); ++it)
+        if (concurrent) // HashMapMutex.lock();
         {
-            auto &vect = it->second;
-            for (int ind = vect.size() - 1; ind >= 0; ind--)
+            const std::lock_guard<std::mutex> lock(HashMapMutex);
+            for (auto it = elems.begin(); it != elems.end(); ++it)
             {
-                if (vect[ind].level <= lvl)
+                auto &vect = it->second;
+                for (int ind = vect.size() - 1; ind >= 0; ind--)
                 {
-                    ret->elems.insert({it->first, vector<StackElem>(1, vect[ind])});
-                    break;
+                    if (vect[ind].level <= lvl)
+                    {
+                        ret->elems.insert({it->first, vector<StackElem>(1, vect[ind])});
+                        break;
+                    }
+                }
+            }
+        }
+        else
+        {
+            for (auto it = elems.begin(); it != elems.end(); ++it)
+            {
+                auto &vect = it->second;
+                for (int ind = vect.size() - 1; ind >= 0; ind--)
+                {
+                    if (vect[ind].level <= lvl)
+                    {
+                        ret->elems.insert({it->first, vector<StackElem>(1, vect[ind])});
+                        break;
+                    }
                 }
             }
         }
@@ -375,36 +478,38 @@ public:
 
     void incrementLevel()
     {
-        // if(concurrent) HashMapMutex.lock();
-        curLevel++;
+        if (concurrent) // HashMapMutex.lock();
+        {
+            const std::lock_guard<std::mutex> lock(HashMapMutex);
+            curLevel++;
+        }
+        else
+            curLevel++;
         // if(concurrent) HashMapMutex.unlock();
     }
 
     void decrementLevel()
     {
-        // if(concurrent) HashMapMutex.lock();
-        curLevel--;
-        for (auto it = elems.begin(); it != elems.end();)
+        if (concurrent) // HashMapMutex.lock();
         {
-            if (it->second.back().level > curLevel)
-                it->second.pop_back();
-            if (it->second.empty())
-                it = elems.erase(it);
-            else
-                ++it;
-        }
-        // if(concurrent) HashMapMutex.unlock();
-    }
-
-    void setLevel(int lvl)
-    {
-        // if(concurrent) HashMapMutex.lock();
-        if (lvl < curLevel)
-        {
-            curLevel = lvl;
+            const std::lock_guard<std::mutex> lock(HashMapMutex);
+            curLevel--;
             for (auto it = elems.begin(); it != elems.end();)
             {
-                while (!it->second.empty() && it->second.back().level > curLevel)
+                if (it->second.back().level > curLevel)
+                    it->second.pop_back();
+                if (it->second.empty())
+                    it = elems.erase(it);
+                else
+                    ++it;
+            }
+        }
+        else
+        {
+            curLevel--;
+            for (auto it = elems.begin(); it != elems.end();)
+            {
+                if (it->second.back().level > curLevel)
                     it->second.pop_back();
                 if (it->second.empty())
                     it = elems.erase(it);
@@ -415,24 +520,83 @@ public:
         // if(concurrent) HashMapMutex.unlock();
     }
 
-    void insert(int el, int num)
+    void setLevel(int lvl)
     {
-        // if(concurrent) HashMapMutex.lock();
-        if (num != 0)
+        if (concurrent) // HashMapMutex.lock();
         {
-            auto it = elems.find(el);
-            if (it == elems.end())
-                elems[el].push_back(StackElem(num, curLevel));
-            else if (it->second.back().level < curLevel)
-                it->second.push_back(StackElem(num, curLevel));
-            else if (it->second.back().level == curLevel)
+            const std::lock_guard<std::mutex> lock(HashMapMutex);
+            if (lvl < curLevel)
             {
-                auto &last = it->second.back();
-                last.cltime = num;
+                curLevel = lvl;
+                for (auto it = elems.begin(); it != elems.end();)
+                {
+                    while (!it->second.empty() && it->second.back().level > curLevel)
+                        it->second.pop_back();
+                    if (it->second.empty())
+                        it = elems.erase(it);
+                    else
+                        ++it;
+                }
             }
         }
         else
-            elems.erase(el);
+        {
+            if (lvl < curLevel)
+            {
+                curLevel = lvl;
+                for (auto it = elems.begin(); it != elems.end();)
+                {
+                    while (!it->second.empty() && it->second.back().level > curLevel)
+                        it->second.pop_back();
+                    if (it->second.empty())
+                        it = elems.erase(it);
+                    else
+                        ++it;
+                }
+            }
+        }
+        // if(concurrent) HashMapMutex.unlock();
+    }
+
+    void insert(int el, int num)
+    {
+        if (concurrent) // HashMapMutex.lock();
+        {
+            const std::lock_guard<std::mutex> lock(HashMapMutex);
+            if (num != 0)
+            {
+                auto it = elems.find(el);
+                if (it == elems.end())
+                    elems[el].push_back(StackElem(num, curLevel));
+                else if (it->second.back().level < curLevel)
+                    it->second.push_back(StackElem(num, curLevel));
+                else if (it->second.back().level == curLevel)
+                {
+                    auto &last = it->second.back();
+                    last.cltime = num;
+                }
+            }
+            else
+                elems.erase(el);
+        }
+        else
+        {
+            if (num != 0)
+            {
+                auto it = elems.find(el);
+                if (it == elems.end())
+                    elems[el].push_back(StackElem(num, curLevel));
+                else if (it->second.back().level < curLevel)
+                    it->second.push_back(StackElem(num, curLevel));
+                else if (it->second.back().level == curLevel)
+                {
+                    auto &last = it->second.back();
+                    last.cltime = num;
+                }
+            }
+            else
+                elems.erase(el);
+        }
         // if(concurrent) HashMapMutex.unlock();
     }
 
@@ -482,30 +646,53 @@ template <typename T>
 class ConcurrentList
 {
 public:
-    ConcurrentList(bool conc = false) : elems(), concurrent(conc) {}
-    ConcurrentList(const ConcurrentList &cl) : elems(cl.elems), concurrent(cl.concurrent) {}
-    ConcurrentList(const ConcurrentList &cl, int len) : elems(cl.elems.begin(), cl.elems.begin() + len), concurrent(cl.concurrent) {}
+    ConcurrentList(bool conc = false) : elems(), concurrent(conc), CListMutex() {}
+    ConcurrentList(const ConcurrentList &cl) : elems(cl.elems), concurrent(cl.concurrent), CListMutex() {}
+    ConcurrentList(const ConcurrentList &cl, int len) : elems(cl.elems.begin(), cl.elems.begin() + len), concurrent(cl.concurrent), CListMutex() {}
 
     ConcurrentList *clone()
     {
-        // if(concurrent) CListMutex.lock();
         ConcurrentList *ret = new ConcurrentList(*this);
+        if (concurrent) // CListMutex.lock();
+        {
+            const std::lock_guard<std::mutex> lock(CListMutex);
+            ret = new ConcurrentList(*this);
+        }
+        else
+        {
+            ret = new ConcurrentList(*this);
+        }
         // if(concurrent) CListMutex.unlock();
         return ret;
     }
 
     ConcurrentList *clone(int len)
     {
-        // if(concurrent) CListMutex.lock();
-        ConcurrentList *ret = new ConcurrentList(*this, len);
+        ConcurrentList *ret;
+        if (concurrent) // CListMutex.lock();
+        {
+            const std::lock_guard<std::mutex> lock(CListMutex);
+            ret = new ConcurrentList(*this, len);
+        }
+        else
+        {
+            ret = new ConcurrentList(*this, len);
+        }
         // if(concurrent) CListMutex.unlock();
         return ret;
     }
 
     void push_back(T x)
     {
-        // if(concurrent) CListMutex.lock();
-        elems.push_back(x);
+        if (concurrent) // CListMutex.lock();
+        {
+            const std::lock_guard<std::mutex> lock(CListMutex);
+            elems.push_back(x);
+        }
+        else
+        {
+            elems.push_back(x);
+        }
         // if(concurrent) CListMutex.unlock();
     }
 
@@ -514,8 +701,15 @@ public:
 
     void pop_back()
     {
-        // if(concurrent) CListMutex.lock();
-        elems.pop_back();
+        if (concurrent) // CListMutex.lock();
+        {
+            const std::lock_guard<std::mutex> lock(CListMutex);
+            elems.pop_back();
+        }
+        else
+        {
+            elems.pop_back();
+        }
         // if(concurrent) CListMutex.unlock();
     }
 
@@ -523,8 +717,15 @@ public:
     {
         while (elems.size() > sz)
         {
-            // if(concurrent) CListMutex.lock();
-            elems.pop_back();
+            if (concurrent) // CListMutex.lock();
+            {
+                const std::lock_guard<std::mutex> lock(CListMutex);
+                elems.pop_back();
+            }
+            else
+            {
+                elems.pop_back();
+            }
             // if(concurrent) CListMutex.unlock();
         }
     }
@@ -548,8 +749,8 @@ private:
     bool concurrent = false;
     vector<T> elems;
 
-    // typedef tbb::spin_mutex CListMutexType;
-    // CListMutexType CListMutex;
+    typedef std::mutex CListMutexType;
+    CListMutexType CListMutex;
 };
 
 #endif //_DATA_STRUCTS_H_

@@ -6,7 +6,9 @@
 #include <chrono>
 #include <queue>
 #include <list>
-#include <cilk/cilk.h>
+#include <iostream>
+// #include <cilk/cilk.h>
+#include <cilk/cilk_api.h>
 
 using namespace std;
 
@@ -113,7 +115,7 @@ bool findPath(Graph *g, int u, int start, HashSetStack &blocked, Path *&path, in
     unsigned long vertex_visits = 0;
     bool found = dfsUtil(g, u, start, 0, blocked, visited, blck_flag, path, vertex_visits, tstart);
 
-    vertexVisits.increment(vertex_visits);
+    vertexVisits += vertex_visits;
 
 #if defined(BLK_FORWARD) && defined(SUCCESSFUL_DFS_BLK)
     if (u != start && blck_flag)
@@ -136,7 +138,7 @@ bool dfsPrune(Graph *g, int u, int start, HashSetStack &blocked, Path *&path, in
     unsigned long vertex_visits = 0;
     bool found = dfsUtil(g, u, start, 0, blocked, visited, blck_flag, path, vertex_visits, tstart);
 
-    vertexVisits.increment(vertex_visits);
+    vertexVisits += vertex_visits;
 
 #if defined(BLK_FORWARD) && defined(SUCCESSFUL_DFS_BLK)
     if (u != start && blck_flag)
@@ -153,18 +155,85 @@ bool dfsPrune(Graph *g, int u, int start, HashSetStack &blocked, Path *&path, in
 
 namespace
 {
-
-    void followPath(Graph *g, EdgeData e, Cycle *current, HashSetStack &blocked,
-                    CycleHist cilk_reducer(ident_hist, combin_hist) & result, Path *current_path, int tstart = -1);
-
-    void cyclesReadTarjan(Graph *g, EdgeData e, Cycle *current, HashSetStack &blocked,
-                          CycleHist cilk_reducer(ident_hist, combin_hist) & result, pair<Path *, Path *> paths,
-                          int tstart = -1)
+    struct ThreadDataGuard
     {
+    public:
+        ThreadDataGuard() : refCount(1), RefCountMutex()
+        {
+#ifdef BLK_FORWARD
+            blocked = new HashSetStack(true /*concurrent*/);
+#endif
+            current = new Cycle(true /*concurrent*/);
+        }
 
+        ThreadDataGuard(ThreadDataGuard *guard, int lvl, int pathSize) : refCount(1), RefCountMutex()
+        {
+#ifdef BLK_FORWARD
+            blocked = guard->blocked->clone(lvl);
+#endif
+            current = guard->current->clone(pathSize);
+        }
+
+        void incrementRefCount()
+        {
+            const std::lock_guard<std::mutex> lock(RefCountMutex);
+            refCount++;
+        }
+
+        void decrementRefCount()
+        {
+            const std::lock_guard<std::mutex> lock(RefCountMutex);
+            refCount--;
+            if (refCount <= 0)
+            {
+#ifdef BLK_FORWARD
+                delete blocked;
+                blocked = NULL;
+#endif
+                delete current;
+                current = NULL;
+                delete this;
+            }
+        }
+
+#ifdef BLK_FORWARD
+        HashSetStack *blocked = NULL;
+#endif
+        Cycle *current = NULL;
+
+        int refCount = 1;
+
+        typedef std::mutex RefCountMutexType;
+        RefCountMutexType RefCountMutex;
+    };
+
+    void followPath(Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
+                    CycleHist cilk_reducer(ident_hist, combin_hist) & result, Path *current_path, int tstart = -1, int level = 0);
+
+    void RTCycleSubtask(Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked,
+                        ThreadDataGuard *thrData, CycleHist cilk_reducer(ident_hist, combin_hist) & result, Path *current_path,
+                        int pathSize = 0, int ownderThread = -1, int tstart = -1, int level = 0);
+
+    void cyclesReadTarjan(Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
+                          CycleHist cilk_reducer(ident_hist, combin_hist) & result, pair<Path *, Path *> paths,
+                          int level = 0, int tstart = -1)
+    {
+        int pathSize = current->size();
 #ifdef NEIGHBOR_ORDER
         vector<Path *> allPaths;
 #endif
+        // Copy on steal
+        ThreadDataGuard *newb = new ThreadDataGuard(thrData, level, pathSize);
+
+        // Decrement the ref. count of the previous blocked map
+        thrData->decrementRefCount();
+
+        thrData = newb;
+// Update the pointers
+#ifdef BLK_FORWARD
+        blocked = thrData->blocked;
+#endif
+        current = thrData->current;
 
         // exists a vertex w with a path to s*/
         for (int ind = g->offsArray[e.vertex]; ind < g->offsArray[e.vertex + 1]; ind++)
@@ -181,7 +250,7 @@ namespace
 
             if ((tstart == -1) && (w < current->front()))
                 continue;
-            if (blocked.exists(w))
+            if (blocked->exists(w))
                 continue;
 
             Path *current_path = NULL;
@@ -198,7 +267,7 @@ namespace
             else
             {
                 bool found = false;
-                found = findPath(g, w, current->front(), blocked, current_path, tstart);
+                found = findPath(g, w, current->front(), *blocked, current_path, tstart);
                 if (!found)
                     continue;
             }
@@ -207,28 +276,33 @@ namespace
             allPaths.push_back(current_path);
         }
 
+        int thrId = __cilkrts_get_worker_number();
         for (auto current_path : allPaths)
         {
 #endif
-
+            // Forwarding the blocked set
 #ifdef BLK_FORWARD
-            //        HashSetStack new_blocked(blocked);
-            blocked.incrementLevel();
-            cilk_spawn followPath(g, e, current->clone(), *blocked.clone(), result, current_path, tstart);
-            blocked.decrementLevel();
+            HashSetStack *new_blocked = blocked;
+            // new_blocked->incrementLevel();
 #else
-            HashSetStack new_blocked(g->getVertexNo());
+            HashSetStack *new_blocked = new HashSetStack(g->getVertexNo());
             for (auto c : *current)
                 if (c != current->front())
-                    new_blocked.insert(c);
-            followPath(g, e, current, new_blocked, result, current_path, tstart);
+                    new_blocked->insert(c);
 #endif
+            thrData->incrementRefCount();
+            // cout << "outer level at " << e.vertex << " " << level << " inner level " << new_blocked->level() << std::endl;
+            // cout << "level at " << e.vertex << " " << new_blocked->level() << std::endl;
+            cilk_spawn RTCycleSubtask(g, EdgeData(e.vertex, -1), current, new_blocked, thrData,
+                                      result, current_path, pathSize, thrId, tstart, level);
+            // new_blocked->decrementLevel();
         }
+        thrData->decrementRefCount();
     }
 
-    void followPath(Graph *g, EdgeData e, Cycle *current, HashSetStack &blocked, CycleHist cilk_reducer(ident_hist, combin_hist) & result, Path *current_path, int tstart)
+    void followPath(Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
+                    CycleHist cilk_reducer(ident_hist, combin_hist) & result, Path *current_path, int tstart, int level)
     {
-
         Path *another_path = NULL;
         bool branching = false;
 
@@ -239,7 +313,7 @@ namespace
             prev_vertex = current_path->back();
             current_path->pop_back();
             current->push_back(prev_vertex);
-            blocked.insert(prev_vertex);
+            blocked->insert(prev_vertex);
 
             for (int ind = g->offsArray[prev_vertex]; ind < g->offsArray[prev_vertex + 1]; ind++)
             {
@@ -253,12 +327,12 @@ namespace
                 }
 
                 if (u != current_path->back() && ((tstart != -1) || (tstart == -1) && (u > current->front())) &&
-                    !blocked.exists(u) && !branching)
+                    !blocked->exists(u) && !branching)
                 {
 
                     // the other path is blocked
                     // if there's another cycle, there's a branch
-                    branching = dfsPrune(g, u, current->front(), blocked, another_path, tstart);
+                    branching = dfsPrune(g, u, current->front(), *blocked, another_path, tstart);
 
                     if (branching)
                     {
@@ -279,27 +353,74 @@ namespace
                 delete current_path;
             current_path = NULL;
 #endif
-            cilk_spawn cyclesReadTarjan(g, EdgeData(prev_vertex, -1), current, *blocked.clone(), result, make_pair(current_path, another_path), tstart);
+            cyclesReadTarjan(g, EdgeData(prev_vertex, -1), current, blocked, thrData, result,
+                             make_pair(current_path, another_path), level + 1, tstart);
         }
         else
         {
             delete current_path;
             current_path = NULL;
             recordCycle(current, result);
+
+#if !defined(BLK_FORWARD)
+            delete blocked;
+            blocked = NULL;
+#endif
+
+            thrData->decrementRefCount();
         }
 
         // Remove all the vertices added after e.vertex
-        while (1)
-        {
-            int back = current->back();
-            if (back == e.vertex)
-                break;
-            current->pop_back();
-        }
+        // probably don't need this anymore because it's
+        // corrected in RTCycleSubtask
+        // while (1)
+        // {
+        //     int back = current->back();
+        //     if (back == e.vertex)
+        //         break;
+        //     current->pop_back();
+        // }
     }
 
-}
+    void RTCycleSubtask(Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked,
+                        ThreadDataGuard *thrData, CycleHist cilk_reducer(ident_hist, combin_hist) & result, Path *current_path,
+                        int pathSize, int ownderThread, int tstart, int level)
+    {
+        int thisThread = __cilkrts_get_worker_number();
+        if (ownderThread != thisThread)
+        {
+            // Copy on steal
+            ThreadDataGuard *newb = new ThreadDataGuard(thrData, level, pathSize);
 
+            // Decrement the ref. count of the previous blocked map
+            thrData->decrementRefCount();
+
+            thrData = newb;
+// Update the pointers
+#ifdef BLK_FORWARD
+            blocked = thrData->blocked;
+#endif
+            current = thrData->current;
+        }
+        else
+        {
+#ifdef BLK_FORWARD
+            blocked->setLevel(level);
+#endif
+            current->pop_back_until(pathSize);
+        }
+
+        blocked->incrementLevel();
+
+        // not sure if it's just e or EdgeData(e.vertex, -1)
+        followPath(g, EdgeData(e.vertex, -1), current, blocked, thrData, result, current_path, tstart, level);
+
+#ifndef BLK_FORWARD
+        delete blocked;
+        blocked = NULL;
+#endif
+    }
+}
 /// ************ coarse-grained Read-Tarjan algorithm with time window - top level ************
 
 void allCyclesReadTarjanCoarseGrainedTW(Graph *g, CycleHist &result, int numThreads)
@@ -319,16 +440,29 @@ void allCyclesReadTarjanCoarseGrainedTW(Graph *g, CycleHist &result, int numThre
                 {
                     int ts = tset[j];
 
-                    HashSetStack blocked(g->getVertexNo());
-                    Cycle *cycle = new Cycle();
+                    ThreadDataGuard *thrData = nullptr;
+                    thrData = new ThreadDataGuard();
+
+#if defined(BLK_FORWARD)
+                    HashSetStack *blocked = thrData->blocked;
+#else
+                    HashSetStack *blocked = new HashSetStack(graph->getVertexNo());
+#endif
+
+                    Cycle *cycle = thrData->current;
                     cycle->push_back(i);
 
                     Path *current_path = NULL;
-                    bool found = findPath(g, w, cycle->front(), blocked, current_path, ts);
+                    bool found = findPath(g, w, cycle->front(), *blocked, current_path, ts);
                     if (found)
-                        followPath(g, EdgeData(i, -1), cycle, blocked, resultHistogram, current_path, ts);
+                    {
+#if defined(BLK_FORWARD)
+                        blocked->incrementLevel();
+#endif
+                        cilk_spawn followPath(g, EdgeData(i, -1), cycle, blocked, thrData, resultHistogram, current_path, ts, 0);
+                    }
 
-                    delete cycle;
+                    // delete cycle;
                 }
             }
         }
