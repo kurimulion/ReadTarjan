@@ -6,7 +6,6 @@
 #include <chrono>
 #include <queue>
 #include <list>
-#include <cilk/cilk.h>
 
 using namespace std;
 
