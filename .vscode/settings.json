@@ -1,7 +1,0 @@
-{
-    "files.associations": {
-        "*.v": "coq",
-        "unordered_set": "cpp",
-        "list": "cpp"
-    }
-}

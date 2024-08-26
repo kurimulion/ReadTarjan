@@ -21,3 +21,4 @@ bin/
 .idea
 build-*
 *.DS_Store*
+.vscode
