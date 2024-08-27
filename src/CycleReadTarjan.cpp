@@ -7,7 +7,6 @@
 #include <queue>
 #include <list>
 #include <iostream>
-// #include <cilk/cilk.h>
 #include <cilk/cilk_api.h>
 
 using namespace std;
@@ -18,7 +17,6 @@ extern ConcurrentCounter vertexVisits;
 void ident_hist(void *v)
 {
     new (v) CycleHist();
-    // *(CycleHist *)v = CycleHist();
 }
 
 void combin_hist(void *l, void *r)
@@ -182,7 +180,7 @@ namespace
 
         void decrementRefCount()
         {
-            const std::lock_guard<std::mutex> lock(RefCountMutex);
+            const lock_guard<std::mutex> lock(RefCountMutex);
             refCount--;
             if (refCount <= 0)
             {
@@ -297,7 +295,8 @@ namespace
                                       result, current_path, pathSize, thrId, tstart, level);
             // new_blocked->decrementLevel();
         }
-        thrData->decrementRefCount();
+        if (allPaths.size() == 0)
+            thrData->decrementRefCount();
     }
 
     void followPath(Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
