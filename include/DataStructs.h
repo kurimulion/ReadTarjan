@@ -151,6 +151,7 @@ public:
         HashSetStack *ret;
         if (concurrent) // HashSetMutex.lock();
         {
+            ret->concurrent = true;
             const std::lock_guard<std::mutex> lock(HashSetMutex);
             ret = new HashSetStack(*this);
         }
@@ -170,6 +171,7 @@ public:
 
         if (concurrent) // HashSetMutex.lock();
         {
+            ret->concurrent = true;
             const std::lock_guard<std::mutex> lock(HashSetMutex);
             for (auto it = elems.begin(); it != elems.end(); ++it)
             {
@@ -655,6 +657,7 @@ public:
         ConcurrentList *ret = new ConcurrentList(*this);
         if (concurrent) // CListMutex.lock();
         {
+            ret->concurrent = true;
             const std::lock_guard<std::mutex> lock(CListMutex);
             ret = new ConcurrentList(*this);
         }
@@ -671,6 +674,7 @@ public:
         ConcurrentList *ret;
         if (concurrent) // CListMutex.lock();
         {
+            ret->concurrent = true;
             const std::lock_guard<std::mutex> lock(CListMutex);
             ret = new ConcurrentList(*this, len);
         }
