@@ -7,6 +7,7 @@
 #include <queue>
 #include <list>
 #include <iostream>
+#include <atomic>
 #include <cilk/cilk_api.h>
 
 using namespace std;
@@ -156,7 +157,7 @@ namespace
     struct ThreadDataGuard
     {
     public:
-        ThreadDataGuard() : refCount(1), RefCountMutex()
+        ThreadDataGuard() : refCount(1)
         {
 #ifdef BLK_FORWARD
             blocked = new HashSetStack(true /*concurrent*/);
@@ -164,7 +165,7 @@ namespace
             current = new Cycle(true /*concurrent*/);
         }
 
-        ThreadDataGuard(ThreadDataGuard *guard, int lvl, int pathSize) : refCount(1), RefCountMutex()
+        ThreadDataGuard(ThreadDataGuard *guard, int lvl, int pathSize) : refCount(1)
         {
 #ifdef BLK_FORWARD
             blocked = guard->blocked->clone(lvl);
@@ -174,13 +175,11 @@ namespace
 
         void incrementRefCount()
         {
-            const std::lock_guard<std::mutex> lock(RefCountMutex);
             refCount++;
         }
 
         void decrementRefCount()
         {
-            const lock_guard<std::mutex> lock(RefCountMutex);
             refCount--;
             if (refCount <= 0)
             {
@@ -199,10 +198,7 @@ namespace
 #endif
         Cycle *current = NULL;
 
-        int refCount = 1;
-
-        typedef std::mutex RefCountMutexType;
-        RefCountMutexType RefCountMutex;
+        atomic<int> refCount;
     };
 
     void followPath(Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
@@ -281,7 +277,6 @@ namespace
             // Forwarding the blocked set
 #ifdef BLK_FORWARD
             HashSetStack *new_blocked = blocked;
-            // new_blocked->incrementLevel();
 #else
             HashSetStack *new_blocked = new HashSetStack(g->getVertexNo());
             for (auto c : *current)
@@ -289,11 +284,8 @@ namespace
                     new_blocked->insert(c);
 #endif
             thrData->incrementRefCount();
-            // cout << "outer level at " << e.vertex << " " << level << " inner level " << new_blocked->level() << std::endl;
-            // cout << "level at " << e.vertex << " " << new_blocked->level() << std::endl;
             cilk_spawn RTCycleSubtask(g, EdgeData(e.vertex, -1), current, new_blocked, thrData,
                                       result, current_path, pathSize, thrId, tstart, level);
-            // new_blocked->decrementLevel();
         }
         if (allPaths.size() == 0)
             thrData->decrementRefCount();
@@ -422,7 +414,7 @@ namespace
 }
 /// ************ coarse-grained Read-Tarjan algorithm with time window - top level ************
 
-void allCyclesReadTarjanCoarseGrainedTW(Graph *g, CycleHist &result, int numThreads)
+void allCyclesReadTarjanCoarseGrainedTW(Graph *g, CycleHist &result)
 {
     CycleHist cilk_reducer(ident_hist, combin_hist) resultHistogram;
 
@@ -460,8 +452,6 @@ void allCyclesReadTarjanCoarseGrainedTW(Graph *g, CycleHist &result, int numThre
 #endif
                         cilk_spawn followPath(g, EdgeData(i, -1), cycle, blocked, thrData, resultHistogram, current_path, ts, 0);
                     }
-
-                    // delete cycle;
                 }
             }
         }

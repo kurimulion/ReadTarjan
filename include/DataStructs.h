@@ -22,33 +22,7 @@ inline void add_cnt(void *l, void *r)
     *(unsigned long *)l += *(unsigned long *)r;
 }
 
-/// Concurrent counter for collecting statistics
-// class TConcurrentCounter
-// {
-// public:
-//     TConcurrentCounter() {}
-
-//     void increment(unsigned long inc = 1)
-//     {
-//         result += inc;
-//     }
-
-//     void decrement()
-//     {
-//         result--;
-//     }
-
-//     unsigned long getResult()
-//     {
-//         return result;
-//     }
-
-// private:
-//     unsigned long cilk_reducer(ident_cnt, add_cnt) result;
-// };
-
 typedef unsigned long cilk_reducer(ident_cnt, add_cnt) ConcurrentCounter;
-// typedef unsigned long ConcurrentCounter;
 
 /// Wrapper for dynamic array
 template <typename T>

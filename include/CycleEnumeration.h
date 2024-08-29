@@ -52,7 +52,7 @@ typedef HashMap BlockedMap;
 // void allCyclesJohnsonFineGrainedTW(Graph *g, CycleHist& result, int numThreads);
 
 // void allCyclesReadTarjanFineGrainedTW(Graph *g, CycleHist& result, int numThreads);
-void allCyclesReadTarjanCoarseGrainedTW(Graph *g, CycleHist &result, int numThreads);
+void allCyclesReadTarjanCoarseGrainedTW(Graph *g, CycleHist &result);
 
 /// Enumerating temporal cycles
 // void allCyclesReadTarjanTemp(Graph *g, CycleHist& result);

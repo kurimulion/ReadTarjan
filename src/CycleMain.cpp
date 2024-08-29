@@ -87,7 +87,7 @@ int main(int argc, char **argv)
 
     case 0:
         cout << " ----------------- Coarse-grained parallel READ-TARJAN with time window ------------------ " << endl;
-        allCyclesReadTarjanCoarseGrainedTW(g, resultHistogram, nthr);
+        allCyclesReadTarjanCoarseGrainedTW(g, resultHistogram);
         break;
 
         // case 3:
