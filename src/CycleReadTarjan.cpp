@@ -414,48 +414,102 @@ namespace
 }
 /// ************ coarse-grained Read-Tarjan algorithm with time window - top level ************
 
+void findAndFollow(Graph *g, CycleHist cilk_reducer(ident_hist, combin_hist) & result, int node, int ind, int j)
+{
+    int w = g->edgeArray[ind].vertex;
+    auto &tset = g->edgeArray[ind].tstamps;
+    int ts = tset[j];
+
+    ThreadDataGuard *thrData = nullptr;
+    thrData = new ThreadDataGuard();
+
+#if defined(BLK_FORWARD)
+    HashSetStack *blocked = thrData->blocked;
+#else
+    HashSetStack *blocked = new HashSetStack(graph->getVertexNo());
+#endif
+
+    Cycle *cycle = thrData->current;
+    cycle->push_back(node);
+
+    Path *current_path = NULL;
+    bool found = findPath(g, w, cycle->front(), *blocked, current_path, ts);
+    if (found)
+    {
+#if defined(BLK_FORWARD)
+        blocked->incrementLevel();
+#endif
+        cilk_spawn followPath(g, EdgeData(node, -1), cycle, blocked, thrData, result, current_path, ts, 0);
+    }
+}
+
+void spawnOverTimestamps(Graph *g, CycleHist cilk_reducer(ident_hist, combin_hist) & result, int node, int ind, size_t min, size_t max)
+{
+    if (max == min)
+        return;
+    else if ((max - min == 1))
+        cilk_spawn findAndFollow(g, result, node, ind, min);
+    else if ((max - min) == 2)
+    {
+        cilk_spawn findAndFollow(g, result, node, ind, min);
+        cilk_spawn findAndFollow(g, result, node, ind, max - 1);
+    }
+    else
+    {
+        int mid = (max + min) / 2;
+        cilk_spawn spawnOverTimestamps(g, result, node, ind, min, mid);
+        cilk_spawn spawnOverTimestamps(g, result, node, ind, mid, max);
+    }
+}
+
+void spawnOverEdges(Graph *g, CycleHist cilk_reducer(ident_hist, combin_hist) & result, int node, size_t min, size_t max)
+{
+    if (max == min)
+        return;
+    else if ((max - min) == 1)
+        cilk_spawn spawnOverTimestamps(g, result, node, min, 0, g->edgeArray[min].tstamps.size());
+    else if ((max - min) == 2)
+    {
+        cilk_spawn spawnOverTimestamps(g, result, node, min, 0, g->edgeArray[min].tstamps.size());
+        cilk_spawn spawnOverTimestamps(g, result, node, max - 1, 0, g->edgeArray[max - 1].tstamps.size());
+    }
+    else
+    {
+        int mid = (max + min) / 2;
+        cilk_spawn spawnOverEdges(g, result, node, min, mid);
+        cilk_spawn spawnOverEdges(g, result, node, mid, max);
+    }
+}
+
+void spawnOverNodes(Graph *g, CycleHist cilk_reducer(ident_hist, combin_hist) & result, size_t min, size_t max)
+{
+    if (max == min)
+        return;
+    else if ((max - min) == 1)
+    {
+        if ((g->numNeighbors(min) != 0) && (g->numInEdges(min) != 0))
+            cilk_spawn spawnOverEdges(g, result, min, size_t(g->offsArray[min]), size_t(g->offsArray[min + 1]));
+    }
+    else if ((max - min) == 2)
+    {
+        if ((g->numNeighbors(min) != 0) && (g->numInEdges(min) != 0))
+            cilk_spawn spawnOverEdges(g, result, min, size_t(g->offsArray[min]), size_t(g->offsArray[min + 1]));
+        if ((g->numNeighbors(max - 1) != 0) && (g->numInEdges(max - 1) != 0))
+            cilk_spawn spawnOverEdges(g, result, max - 1, size_t(g->offsArray[max - 1]), size_t(g->offsArray[max]));
+    }
+    else
+    {
+        int mid = (max + min) / 2;
+        cilk_spawn spawnOverNodes(g, result, min, mid);
+        cilk_spawn spawnOverNodes(g, result, mid, max);
+    }
+}
+
 void allCyclesReadTarjanCoarseGrainedTW(Graph *g, CycleHist &result)
 {
     CycleHist cilk_reducer(ident_hist, combin_hist) resultHistogram;
 
-    cilk_for(size_t i = 0; i < size_t(g->getVertexNo()); i++)
-    {
-        if ((g->numNeighbors(i) != 0) && (g->numInEdges(i) != 0))
-        {
-            cilk_for(size_t ind = size_t(g->offsArray[i]); ind < size_t(g->offsArray[i + 1]); ind++)
-            {
-                int w = g->edgeArray[ind].vertex;
-                auto &tset = g->edgeArray[ind].tstamps;
-
-                cilk_for(size_t j = 0; j < size_t(tset.size()); j++)
-                {
-                    int ts = tset[j];
-
-                    ThreadDataGuard *thrData = nullptr;
-                    thrData = new ThreadDataGuard();
-
-#if defined(BLK_FORWARD)
-                    HashSetStack *blocked = thrData->blocked;
-#else
-                    HashSetStack *blocked = new HashSetStack(graph->getVertexNo());
-#endif
-
-                    Cycle *cycle = thrData->current;
-                    cycle->push_back(i);
-
-                    Path *current_path = NULL;
-                    bool found = findPath(g, w, cycle->front(), *blocked, current_path, ts);
-                    if (found)
-                    {
-#if defined(BLK_FORWARD)
-                        blocked->incrementLevel();
-#endif
-                        cilk_spawn followPath(g, EdgeData(i, -1), cycle, blocked, thrData, resultHistogram, current_path, ts, 0);
-                    }
-                }
-            }
-        }
-    }
+    spawnOverNodes(g, resultHistogram, 0, size_t(g->getVertexNo()));
 
     result = resultHistogram;
 }
