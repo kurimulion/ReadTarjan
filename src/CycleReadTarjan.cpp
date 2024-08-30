@@ -15,6 +15,13 @@ using namespace std;
 extern int timeWindow;
 extern ConcurrentCounter vertexVisits;
 
+enum level
+{
+    node,
+    edge,
+    timestamp
+};
+
 void ident_hist(void *v)
 {
     new (v) CycleHist();
@@ -443,65 +450,64 @@ void findAndFollow(Graph *g, CycleHist cilk_reducer(ident_hist, combin_hist) & r
     }
 }
 
-void spawnOverTimestamps(Graph *g, CycleHist cilk_reducer(ident_hist, combin_hist) & result, int node, int ind, size_t min, size_t max)
+void spawnTasks(Graph *g, CycleHist cilk_reducer(ident_hist, combin_hist) & result, int i, int ind, size_t min, size_t max, level l)
 {
-    if (max == min)
+    if (min == max)
         return;
-    else if ((max - min == 1))
-        cilk_spawn findAndFollow(g, result, node, ind, min);
-    else if ((max - min) == 2)
-    {
-        cilk_spawn findAndFollow(g, result, node, ind, min);
-        cilk_spawn findAndFollow(g, result, node, ind, max - 1);
-    }
     else
     {
-        int mid = (max + min) / 2;
-        cilk_spawn spawnOverTimestamps(g, result, node, ind, min, mid);
-        cilk_spawn spawnOverTimestamps(g, result, node, ind, mid, max);
-    }
-}
-
-void spawnOverEdges(Graph *g, CycleHist cilk_reducer(ident_hist, combin_hist) & result, int node, size_t min, size_t max)
-{
-    if (max == min)
-        return;
-    else if ((max - min) == 1)
-        cilk_spawn spawnOverTimestamps(g, result, node, min, 0, g->edgeArray[min].tstamps.size());
-    else if ((max - min) == 2)
-    {
-        cilk_spawn spawnOverTimestamps(g, result, node, min, 0, g->edgeArray[min].tstamps.size());
-        cilk_spawn spawnOverTimestamps(g, result, node, max - 1, 0, g->edgeArray[max - 1].tstamps.size());
-    }
-    else
-    {
-        int mid = (max + min) / 2;
-        cilk_spawn spawnOverEdges(g, result, node, min, mid);
-        cilk_spawn spawnOverEdges(g, result, node, mid, max);
-    }
-}
-
-void spawnOverNodes(Graph *g, CycleHist cilk_reducer(ident_hist, combin_hist) & result, size_t min, size_t max)
-{
-    if (max == min)
-        return;
-    else if ((max - min) == 1)
-    {
-        if ((g->numNeighbors(min) != 0) && (g->numInEdges(min) != 0))
-            cilk_spawn spawnOverEdges(g, result, min, size_t(g->offsArray[min]), size_t(g->offsArray[min + 1]));
-    }
-    else if ((max - min) == 2)
-    {
-        if ((g->numNeighbors(min) != 0) && (g->numInEdges(min) != 0))
-            cilk_spawn spawnOverEdges(g, result, min, size_t(g->offsArray[min]), size_t(g->offsArray[min + 1]));
-        if ((g->numNeighbors(max - 1) != 0) && (g->numInEdges(max - 1) != 0))
-            cilk_spawn spawnOverEdges(g, result, max - 1, size_t(g->offsArray[max - 1]), size_t(g->offsArray[max]));
-    }
-    else
-    {
-        int mid = (max + min) / 2;
-        cilk_spawn spawnOverNodes(g, result, min, mid);
-        cilk_spawn spawnOverNodes(g, result, mid, max);
+        switch (l)
+        {
+        case node:
+            if ((max - min) == 1)
+            {
+                if ((g->numNeighbors(min) != 0) && (g->numInEdges(min) != 0))
+                    cilk_spawn spawnTasks(g, result, min, ind, size_t(g->offsArray[min]), size_t(g->offsArray[min + 1]), edge);
+            }
+            else if ((max - min) == 2)
+            {
+                if ((g->numNeighbors(min) != 0) && (g->numInEdges(min) != 0))
+                    cilk_spawn spawnTasks(g, result, min, ind, size_t(g->offsArray[min]), size_t(g->offsArray[min + 1]), edge);
+                if ((g->numNeighbors(max - 1) != 0) && (g->numInEdges(max - 1) != 0))
+                    cilk_spawn spawnTasks(g, result, max - 1, ind, size_t(g->offsArray[max - 1]), size_t(g->offsArray[max]), edge);
+            }
+            else
+            {
+                int mid = (max + min) / 2;
+                cilk_spawn spawnTasks(g, result, i, ind, min, mid, l);
+                cilk_spawn spawnTasks(g, result, i, ind, mid, max, l);
+            }
+            break;
+        case edge:
+            if ((max - min) == 1)
+                cilk_spawn spawnTasks(g, result, i, min, 0, g->edgeArray[min].tstamps.size(), timestamp);
+            else if ((max - min) == 2)
+            {
+                cilk_spawn spawnTasks(g, result, i, min, 0, g->edgeArray[min].tstamps.size(), timestamp);
+                cilk_spawn spawnTasks(g, result, i, max - 1, 0, g->edgeArray[max - 1].tstamps.size(), timestamp);
+            }
+            else
+            {
+                int mid = (max + min) / 2;
+                cilk_spawn spawnTasks(g, result, i, ind, min, mid, l);
+                cilk_spawn spawnTasks(g, result, i, ind, mid, max, l);
+            }
+            break;
+        case timestamp:
+            if ((max - min == 1))
+                cilk_spawn findAndFollow(g, result, i, ind, min);
+            else if ((max - min) == 2)
+            {
+                cilk_spawn findAndFollow(g, result, i, ind, min);
+                cilk_spawn findAndFollow(g, result, i, ind, max - 1);
+            }
+            else
+            {
+                int mid = (max + min) / 2;
+                cilk_spawn spawnTasks(g, result, i, ind, min, mid, l);
+                cilk_spawn spawnTasks(g, result, i, ind, mid, max, l);
+            }
+        }
     }
 }
 
@@ -509,7 +515,7 @@ void allCyclesReadTarjanCoarseGrainedTW(Graph *g, CycleHist &result)
 {
     CycleHist cilk_reducer(ident_hist, combin_hist) resultHistogram;
 
-    spawnOverNodes(g, resultHistogram, 0, size_t(g->getVertexNo()));
+    spawnTasks(g, resultHistogram, 0, 0, 0, size_t(g->getVertexNo()), node);
 
     result = resultHistogram;
 }
