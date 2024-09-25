@@ -33,8 +33,9 @@ struct dfs_out
 
 /// DFS/BFS functions for pruning the search space
 
+// sequentially go through out-going edges of u
 void dfsUtilIt(cont dfs_out out, Graph *g, int u, int start, int depth, HashSetStack &blocked, BlockedSet &visited,
-               bool blk_flag, Path *&path, unsigned long stat_cnt, int ind, bool found, int tstart = -1)
+               bool blk_flag, Path *path, unsigned long stat_cnt, int ind, bool found, int tstart = -1)
 {
     if (!found && ind < g->offsArray[u + 1])
     {
@@ -45,7 +46,7 @@ void dfsUtilIt(cont dfs_out out, Graph *g, int u, int start, int depth, HashSetS
         {
             if (!edgeInTimeInterval(tstart, timeWindow, start, u, tset))
                 cilk_spawn dfsUtilIt(out, g, u, start, depth, blocked, visited,
-                                     false, path, state_cnt, ind + 1, blk_flag, tstart);
+                                     false, path, stat_cnt, ind + 1, blk_flag, tstart);
         }
         else if (w == start)
         {
@@ -57,13 +58,13 @@ void dfsUtilIt(cont dfs_out out, Graph *g, int u, int start, int depth, HashSetS
         else if (visited.exists(w))
         {
             cilk_spawn dfsUtilIt(out, g, u, start, depth, blocked, visited,
-                                 false, path, state_cnt, ind + 1, false, tstart);
+                                 false, stat_cnt, ind + 1, false, tstart);
         }
         else if (((tstart != -1) || (tstart == -1) && (w > start)) &&
                  !blocked.exists(w) && !visited.exists(w))
         {
             cont dfs_out out_rec;
-            cilk_spawn dfsUtil(out_rec, g, w, start, depth + 1, blocked, visited, path, stat_cnt, tstart);
+            cilk_spawn dfsUtil(out_rec, g, w, start, depth + 1, blocked, visited, stat_cnt, tstart);
             spawn_next dfsUtilIt(out, g, u, start, depth, out_rec.blocked, out_rec.visited,
                                  blk_flag && out_rec.blk_flag, out_rec.path, out_rec.visited_cnt, ind + 1, out_rec.found, tstart);
         }
@@ -73,7 +74,7 @@ void dfsUtilIt(cont dfs_out out, Graph *g, int u, int start, int depth, HashSetS
 }
 
 void dfsUtilPost(cont dfs_out out, Graph *g, int u, int start, HashSetStack &blocked, BlockedSet &visited,
-                 bool blk_flag, Path *&path, bool found, unsigned long stat_cnt)
+                 bool blk_flag, Path *path, bool found, unsigned long stat_cnt)
 {
     if (found)
     {
@@ -90,33 +91,32 @@ void dfsUtilPost(cont dfs_out out, Graph *g, int u, int start, HashSetStack &blo
         visited.remove(u);
     }
 
-    send_arguement(out, dfs_out{found, blocked, visited, blk_flag, stat_cnt});
+    send_arguement(out, dfs_out{found, blocked, visited, path, blk_flag, stat_cnt});
 }
 
 // Prune the search space and find the path using DFS
 void dfsUtil(cont dfs_out out, Graph *g, int u, int start, int depth, HashSetStack &blocked, BlockedSet &visited,
-             Path *&path, unsigned long &stat_cnt, int tstart = -1)
+             int tstart = -1)
 {
     if (u == start && depth == 0)
     {
-        path = new Path(1);
+        Path *path = new Path(1);
         path->push_back(u);
         send_arguemnt(out, dfs_out{true, blocked, visited, false, path});
     }
     else
     {
-        stat_cnt++;
         visited.insert(u);
-        cilk_spawn dfsUtilIt(out, g, u, start, depth, blocked, visited, true, path, stat_cnt, g->offsArray[u], false, tstart);
+        cilk_spawn dfsUtilIt(out, g, u, start, depth, blocked, visited, true, NULL, 1, g->offsArray[u], false, tstart);
     }
 }
 
 // Different wrappers for the purpose of collecting statistics and easier profiling
 // could be inlined
-void findPath(cont dfs_out out, Graph *g, int u, int start, HashSetStack &blocked, Path *&path, int tstart)
+void findPath(cont dfs_out out, Graph *g, int u, int start, HashSetStack &blocked, int tstart)
 {
     BlockedSet visited(g->getVertexNo());
-    dfsUtil(out, g, u, start, 0, blocked, visited, path, 0, tstart);
+    dfsUtil(out, g, u, start, 0, blocked, visited, tstart);
 }
 
 /// The main backtracking function
@@ -168,6 +168,7 @@ namespace
                         ThreadDataGuard *thrData, Path *current_path, int pathSize = 0, int ownderThread = -1,
                         int tstart = -1, int level = 0);
 
+    // collecting all paths from e, basically sequentially
     void cyclesReadTarjanIt(cont uint_64t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
                             pair<Path *, Path *> paths, bool found, int ind, vector<Path *> &allPaths, Path *another_path, int level = 0, int tstart = -1)
     {
@@ -208,14 +209,14 @@ namespace
             {
                 bool found = false;
                 cont dfs_out res;
-                cilk_spawn findPath(res, w, current->front(), *blocked, current_path, tstart);
+                cilk_spawn findPath(res, w, current->front(), *blocked, tstart);
                 spawn_next cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, level,
                                               tstart, res.found, ind + 1, allPaths, res.path);
             }
         }
         else
         {
-            cilk_spawn cyclesReadTarjanPost(result, g, e, current, blocked, thrData, paths, Vector<Path *> allPaths, level, tstart)
+            cilk_spawn cyclesReadTarjanPost(result, g, e, current, blocked, thrData, paths, allPaths, level, tstart)
         }
     }
 
@@ -281,10 +282,10 @@ namespace
                 // the other path is blocked
                 // if there's another cycle, there's a branch
                 cont dfs_out res;
-                cilk_spawn findPath(res, g, u, current->front(), *blocked, another_path, tstart);
+                cilk_spawn findPath(res, g, u, current->front(), *blocked, tstart);
 
                 spawn_next followPathIt(result, g, e, current, blocked, thrData, current_path,
-                                        tstart, level, another_path, res.found, prev_vertex, ind + 1);
+                                        tstart, level, res.path, res.found, prev_vertex, ind + 1);
             }
         }
         else
@@ -314,7 +315,7 @@ namespace
     }
 
     void followPath(cont uint64_t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
-                    Path *current_path, int tstart, int level, Path *another_path, bool branching, int prev_vertex)
+                    Path *current_path, int tstart, int level)
     {
         Path *another_path = NULL;
         bool branching = false;
@@ -392,9 +393,8 @@ void findAndFollowPre(cont uint64_t result, Graph *g, int node, int ind, int j)
     Cycle *cycle = thrData->current;
     cycle->push_back(node);
 
-    Path *current_path = NULL;
     cont dfs_out res;
-    cilk_spawn findPath(res, g, w, cycle->front(), *blocked, current_path, ts);
+    cilk_spawn findPath(res, g, w, cycle->front(), *blocked, ts);
     spwan_next findAndFollow(result, g, node, cycle, res.blocked, thrData, res.path, ts, 0, res.found);
 }
 
