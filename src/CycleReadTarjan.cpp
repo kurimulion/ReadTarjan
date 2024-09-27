@@ -33,11 +33,30 @@ struct dfs_out
 
 /// DFS/BFS functions for pruning the search space
 
+void dfsUtilPost(cont dfs_out out, Graph *g, int u, int start, HashSetStack &blocked, BlockedSet &visited,
+                 bool blk_flag, Path *path, unsigned long stat_cnt)
+{
+    if (u != start && blk_flag)
+    {
+        blocked.insert(u);
+        visited.remove(u);
+    }
+
+    blocked.include(visited);
+
+    send_arguement(out, dfs_out{false, blocked, visited, path, blk_flag, stat_cnt});
+}
+
 // sequentially go through out-going edges of u
 void dfsUtilIt(cont dfs_out out, Graph *g, int u, int start, int depth, HashSetStack &blocked, BlockedSet &visited,
                bool blk_flag, Path *path, unsigned long stat_cnt, int ind, bool found, int tstart = -1)
 {
-    if (!found && ind < g->offsArray[u + 1])
+    if (found)
+    {
+        path->push_back(u);
+        sned_argument(out, dfs{true, block, visited, path, false, stat_cnt});
+    }
+    else if (ind < g->offsArray[u + 1])
     {
         int w = g->edgeArray[ind].vertex;
         auto &tset = g->edgeArray[ind].tstamps;
@@ -66,32 +85,12 @@ void dfsUtilIt(cont dfs_out out, Graph *g, int u, int start, int depth, HashSetS
             cont dfs_out out_rec;
             cilk_spawn dfsUtil(out_rec, g, w, start, depth + 1, blocked, visited, stat_cnt, tstart);
             spawn_next dfsUtilIt(out, g, u, start, depth, out_rec.blocked, out_rec.visited,
-                                 blk_flag && out_rec.blk_flag, out_rec.path, out_rec.visited_cnt, ind + 1, out_rec.found, tstart);
+                                 blk_flag && out_rec.blk_flag, out_rec.path, state_cnt + out_rec.visited_cnt,
+                                 ind + 1, out_rec.found, tstart);
         }
     }
     else
-        cilk_spawn dfsUtilPost(out, g, u, start, blocked, visited, blk_flag, path, found, stat_cnt);
-}
-
-void dfsUtilPost(cont dfs_out out, Graph *g, int u, int start, HashSetStack &blocked, BlockedSet &visited,
-                 bool blk_flag, Path *path, bool found, unsigned long stat_cnt)
-{
-    if (found)
-    {
-        path->push_back(u);
-    }
-    else
-    {
-        blocked.include(visited);
-    }
-
-    if (u != start && blk_flag)
-    {
-        blocked.insert(u);
-        visited.remove(u);
-    }
-
-    send_arguement(out, dfs_out{found, blocked, visited, path, blk_flag, stat_cnt});
+        cilk_spawn dfsUtilPost(out, g, u, start, blocked, visited, blk_flag, path, stat_cnt);
 }
 
 // Prune the search space and find the path using DFS
@@ -102,7 +101,7 @@ void dfsUtil(cont dfs_out out, Graph *g, int u, int start, int depth, HashSetSta
     {
         Path *path = new Path(1);
         path->push_back(u);
-        send_arguemnt(out, dfs_out{true, blocked, visited, false, path});
+        send_arguemnt(out, dfs_out{true, blocked, visited, false, path, 0});
     }
     else
     {
@@ -181,19 +180,18 @@ namespace
 
             auto &tset = g->edgeArray[ind].tstamps;
 
+            Path *current_path = NULL;
+
             if (tstart != -1)
             {
                 if (!edgeInTimeInterval(tstart, timeWindow, current->front(), e.vertex, tset))
-                    continue;
+                    cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, level, tstart, false, ind + 1, allPaths, current_path);
             }
-
-            if ((tstart == -1) && (w < current->front()))
-                continue;
-            if (blocked->exists(w))
-                continue;
-
-            Path *current_path = NULL;
-            if (paths.first && w == paths.first->back())
+            else if ((tstart == -1) && (w < current->front()))
+                cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, level, tstart, false, ind + 1, allPaths, current_path);
+            else if (blocked->exists(w))
+                cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, level, tstart, false, ind + 1, allPaths, current_path);
+            else if (paths.first && w == paths.first->back())
             {
                 current_path = paths.first;
                 paths.first = NULL;
@@ -261,45 +259,14 @@ namespace
         cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, false, g->offsArray[e.vertex], allPaths, nullptr, level, tstart);
     }
 
-    void followPathIt(cont uint64_t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
-                      Path *current_path, int tstart, int level, Path *another_path, bool branching, int prev_vertex, int ind)
-    {
-        if (ind < g->offsArray[prev_vertex + 1] && !branching)
-        {
-            int u = g->edgeArray[ind].vertex;
-            auto &tset = g->edgeArray[ind].tstamps;
-
-            if (tstart != -1)
-            {
-                if (!edgeInTimeInterval(tstart, timeWindow, current->front(), prev_vertex, tset))
-                    continue;
-            }
-
-            if (u != current_path->back() && ((tstart != -1) || (tstart == -1) && (u > current->front())) &&
-                !blocked->exists(u) && !branching)
-            {
-
-                // the other path is blocked
-                // if there's another cycle, there's a branch
-                cont dfs_out res;
-                cilk_spawn findPath(res, g, u, current->front(), *blocked, tstart);
-
-                spawn_next followPathIt(result, g, e, current, blocked, thrData, current_path,
-                                        tstart, level, res.path, res.found, prev_vertex, ind + 1);
-            }
-        }
-        else
-        {
-            cilk_spawn followPathInt(result, g, e, currnet, blocked, thrData, current_path, tstart,
-                                     level, another_path, branching, prev_vertex);
-        }
-    }
-
     void followPathInt(cont uint64_t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
                        Path *current_path, int tstart, int level, Path *another_path, bool branching, int prev_vertex)
     {
         if (branching)
         {
+            if (current_path)
+                delete current_path;
+            current_path = NULL;
             cilk_spawn cyclesReadTarjan(result, g, EdgeData(prev_vertex, -1), current, blocked, thrData,
                                         make_pair(current_path, another_path), level + 1, tstart);
         }
@@ -307,6 +274,8 @@ namespace
         {
             delete current_path;
             current_path = NULL;
+            delete blocked;
+            blocked = NULL;
             thrData->decrementRefCount();
             // placeholder value
             // the result should be bucketed based on cycle size
@@ -314,11 +283,51 @@ namespace
         }
     }
 
+    void followPathIt(cont uint64_t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
+                      Path *current_path, int tstart, int level, Path *another_path, bool branching, int prev_vertex, int ind)
+    {
+        if (!branching)
+        {
+            if (ind < g->offsArray[prev_vertex + 1])
+            {
+                int u = g->edgeArray[ind].vertex;
+                auto &tset = g->edgeArray[ind].tstamps;
+
+                if (tstart != -1)
+                {
+                    if (!edgeInTimeInterval(tstart, timeWindow, current->front(), prev_vertex, tset))
+                        continue;
+                }
+
+                if (u != current_path->back() && ((tstart != -1) || (tstart == -1) && (u > current->front())) &&
+                    !blocked->exists(u) && !branching)
+                {
+
+                    // the other path is blocked
+                    // if there's another cycle, there's a branch
+                    cont dfs_out res;
+                    cilk_spawn findPath(res, g, u, current->front(), *blocked, tstart);
+
+                    spawn_next followPathIt(result, g, e, current, blocked, thrData, current_path,
+                                            tstart, level, res.path, res.found, prev_vertex, ind + 1);
+                }
+            }
+            else
+            {
+                cilk_spawn followPath(resut, g, e, current, blocked, thrData, current_path, tstart, level);
+            }
+        }
+        else
+        {
+            cilk_spawn followPathInt(result, g, e, current, blocked, thrData, current_path, tstart,
+                                     level, another_path, branching, prev_vertex);
+        }
+    }
+
     void followPath(cont uint64_t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
                     Path *current_path, int tstart, int level)
     {
         Path *another_path = NULL;
-        bool branching = false;
 
         int prev_vertex = -1;
         // Add vertices from the found path to the current path until a branching is found
@@ -330,6 +339,11 @@ namespace
             blocked->insert(prev_vertex);
             cilk_spawn followPathIt(result, g, e, current, blocked, thrData, current_path, tstart,
                                     level, another_path, false, prev_vertex, g->offsArray[prev_vertex]);
+        }
+        else
+        {
+            cilk_spawn followPathInt(result, g, e, current, blocked, thrData, current_path, tstart,
+                                     level, another_path, branching, prev_vertex);
         }
     }
 
