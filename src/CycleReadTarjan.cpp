@@ -85,7 +85,7 @@ void dfsUtilIt(cont dfs_out out, Graph *g, int u, int start, int depth, HashSetS
             cont dfs_out out_rec;
             cilk_spawn dfsUtil(out_rec, g, w, start, depth + 1, blocked, visited, stat_cnt, tstart);
             spawn_next dfsUtilIt(out, g, u, start, depth, out_rec.blocked, out_rec.visited,
-                                 blk_flag && out_rec.blk_flag, out_rec.path, state_cnt + out_rec.visited_cnt,
+                                 blk_flag && out_rec.blk_flag, out_rec.path, stat_cnt + out_rec.visited_cnt,
                                  ind + 1, out_rec.found, tstart);
         }
     }
@@ -161,62 +161,11 @@ namespace
     };
 
     void followPath(cont uint64_t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
-                    Path *current_path, int tstart = -1, int level = 0);
+                    Path *current_path, bool branching, int tstart = -1, int level = 0);
 
     void RTCycleSubtask(cont uint64_t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked,
                         ThreadDataGuard *thrData, Path *current_path, int pathSize = 0, int ownderThread = -1,
                         int tstart = -1, int level = 0);
-
-    // collecting all paths from e, basically sequentially
-    void cyclesReadTarjanIt(cont uint_64t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
-                            pair<Path *, Path *> paths, bool found, int ind, vector<Path *> &allPaths, Path *another_path, int level = 0, int tstart = -1)
-    {
-        if (found)
-            allPaths.push_back(another_path);
-
-        if (ind < g->offsArray[e.vertex + 1])
-        {
-            int w = g->edgeArray[ind].vertex;
-
-            auto &tset = g->edgeArray[ind].tstamps;
-
-            Path *current_path = NULL;
-
-            if (tstart != -1)
-            {
-                if (!edgeInTimeInterval(tstart, timeWindow, current->front(), e.vertex, tset))
-                    cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, level, tstart, false, ind + 1, allPaths, current_path);
-            }
-            else if ((tstart == -1) && (w < current->front()))
-                cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, level, tstart, false, ind + 1, allPaths, current_path);
-            else if (blocked->exists(w))
-                cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, level, tstart, false, ind + 1, allPaths, current_path);
-            else if (paths.first && w == paths.first->back())
-            {
-                current_path = paths.first;
-                paths.first = NULL;
-                cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, level, tstart, true, ind + 1, allPaths, current_path);
-            }
-            else if (paths.second && w == paths.second->back())
-            {
-                current_path = paths.second;
-                paths.second = NULL;
-                cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, level, tstart, true, ind + 1, allPaths, current_path);
-            }
-            else
-            {
-                bool found = false;
-                cont dfs_out res;
-                cilk_spawn findPath(res, w, current->front(), *blocked, tstart);
-                spawn_next cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, level,
-                                              tstart, res.found, ind + 1, allPaths, res.path);
-            }
-        }
-        else
-        {
-            cilk_spawn cyclesReadTarjanPost(result, g, e, current, blocked, thrData, paths, allPaths, level, tstart)
-        }
-    }
 
     void cyclesReadTarjanPost(cont uint_64t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
                               pair<Path *, Path *> paths, Vector<Path *> allPaths, int level = 0, int tstart = -1)
@@ -240,6 +189,62 @@ namespace
         spawn_next sum_arr(result, res, allPaths.size());
     }
 
+    // collecting all paths from e, basically sequentially
+    void cyclesReadTarjanIt(cont uint_64t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
+                            pair<Path *, Path *> paths, bool found, int ind, vector<Path *> &allPaths, Path *another_path,
+                            int level = 0, int tstart = -1)
+    {
+        if (found)
+            allPaths.push_back(another_path);
+
+        if (ind < g->offsArray[e.vertex + 1])
+        {
+            int w = g->edgeArray[ind].vertex;
+
+            auto &tset = g->edgeArray[ind].tstamps;
+
+            Path *current_path = NULL;
+
+            if (tstart != -1)
+            {
+                if (!edgeInTimeInterval(tstart, timeWindow, current->front(), e.vertex, tset))
+                    cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths,
+                                                  false, ind + 1, allPaths, current_path, level, tstart);
+            }
+            else if ((tstart == -1) && (w < current->front()))
+                cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths,
+                                              false, ind + 1, allPaths, current_path, level, tstart);
+            else if (blocked->exists(w))
+                cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths,
+                                              false, ind + 1, allPaths, current_path, level, tstart);
+            else if (paths.first && w == paths.first->back())
+            {
+                current_path = paths.first;
+                paths.first = NULL;
+                cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths,
+                                              true, ind + 1, allPaths, current_path, level, tstart);
+            }
+            else if (paths.second && w == paths.second->back())
+            {
+                current_path = paths.second;
+                paths.second = NULL;
+                cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths,
+                                              true, ind + 1, allPaths, current_path, level, tstart);
+            }
+            else
+            {
+                cont dfs_out res;
+                cilk_spawn findPath(res, w, current->front(), *blocked, tstart);
+                spawn_next cyclesReadTarjanIt(result, g, e, current, res.blocked, thrData, paths,
+                                              res.found, ind + 1, allPaths, res.path, level, tstart);
+            }
+        }
+        else
+        {
+            cilk_spawn cyclesReadTarjanPost(result, g, e, current, blocked, thrData, paths, allPaths, level, tstart)
+        }
+    }
+
     void cyclesReadTarjan(cont uint_64t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
                           pair<Path *, Path *> paths, int level = 0, int tstart = -1)
     {
@@ -256,7 +261,8 @@ namespace
         blocked = thrData->blocked;
         current = thrData->current;
 
-        cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, false, g->offsArray[e.vertex], allPaths, nullptr, level, tstart);
+        cilk_spawn cyclesReadTarjanIt(result, g, e, current, blocked, thrData, paths, false,
+                                      g->offsArray[e.vertex], allPaths, nullptr, level, tstart);
     }
 
     void followPathInt(cont uint64_t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
@@ -296,11 +302,11 @@ namespace
                 if (tstart != -1)
                 {
                     if (!edgeInTimeInterval(tstart, timeWindow, current->front(), prev_vertex, tset))
-                        continue;
+                        cilk_spawn followPathIt(result, g, e, current, blocked, thrData, current_path,
+                                                tstart, level, another_path, branching, prev_vertex, ind + 1);
                 }
-
-                if (u != current_path->back() && ((tstart != -1) || (tstart == -1) && (u > current->front())) &&
-                    !blocked->exists(u) && !branching)
+                else if (u != current_path->back() && ((tstart != -1) || (tstart == -1) && (u > current->front())) &&
+                         !blocked->exists(u) && !branching)
                 {
 
                     // the other path is blocked
@@ -308,24 +314,26 @@ namespace
                     cont dfs_out res;
                     cilk_spawn findPath(res, g, u, current->front(), *blocked, tstart);
 
-                    spawn_next followPathIt(result, g, e, current, blocked, thrData, current_path,
+                    spawn_next followPathIt(result, g, e, current, res.blocked, thrData, current_path,
                                             tstart, level, res.path, res.found, prev_vertex, ind + 1);
                 }
             }
             else
             {
-                cilk_spawn followPath(resut, g, e, current, blocked, thrData, current_path, tstart, level);
+                cilk_spawn followPath(resut, g, e, current, blocked, thrData, current_path, branching, tstart, level);
             }
         }
         else
         {
+            delete another_path;
+            another_path = NULL;
             cilk_spawn followPathInt(result, g, e, current, blocked, thrData, current_path, tstart,
                                      level, another_path, branching, prev_vertex);
         }
     }
 
     void followPath(cont uint64_t result, Graph *g, EdgeData e, Cycle *current, HashSetStack *blocked, ThreadDataGuard *thrData,
-                    Path *current_path, int tstart, int level)
+                    Path *current_path, bool branching, int tstart, int level)
     {
         Path *another_path = NULL;
 
@@ -374,7 +382,7 @@ namespace
         blocked->incrementLevel();
 
         // not sure if it's just e or EdgeData(e.vertex, -1)
-        cilk_spawn followPath(result, g, EdgeData(e.vertex, -1), current, blocked, thrData, result, current_path, tstart, level);
+        cilk_spawn followPath(result, g, EdgeData(e.vertex, -1), current, blocked, thrData, result, current_path, false, tstart, level);
     }
 }
 /// ************ coarse-grained Read-Tarjan algorithm with time window - top level ************
@@ -385,7 +393,7 @@ void findAndFollow(cont uint64_t result, Graph *g, int node, Cycle *current, Has
     if (found)
     {
         blocked->incrementLevel();
-        cilk_spawn followPath(result, g, EdgeData(node, -1), cycle, blocked, thrData, current_path, tstart, 0);
+        cilk_spawn followPath(result, g, EdgeData(node, -1), cycle, blocked, thrData, current_path, false, tstart, 0);
     }
     else
     {
